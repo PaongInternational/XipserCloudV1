@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XipserCloud - Panel Kontrol Termux</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .sidebar {
+            transition: transform 0.3s ease-in-out;
+            transform: translateX(-100%);
+        }
+        .sidebar.open {
+            transform: translateX(0);
+        }
+        .log-area {
+            height: 200px; /* Tinggi yang cukup untuk log */
+        }
+        .log-area::-webkit-scrollbar { width: 6px; }
+        .log-area::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 10px; }
+        .log-area::-webkit-scrollbar-track { background-color: #1f2937; }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary': '#10b981', /* Green */
+                        'secondary': '#1f2937', /* Dark Gray */
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="min-h-screen">
+
+    <div id="app">
+        <!-- Konten akan dimuat di sini oleh JavaScript -->
+    </div>
+    
+    <!-- Custom Alert Container -->
+    <div id="customAlertContainer" class="fixed top-4 right-4 z-50"></div>
+
+    <script>
+        const API_BASE_URL = window.location.origin;
+        const app = document.getElementById('app');
+        let currentView = 'login';
+        let sidebarOpen = false;
+        let auth = { isAuthenticated: false, username: '' };
+        let systemStatus = {};
+        
+        let usageHistory = []; // Untuk menyimpan data grafik real-time
+
+        // --- RENDER FUNCTIONS ---
+        function renderLogin() {
+            app.innerHTML = `
+                <div class="flex items-center justify-center min-h-screen bg-gray-50">
+                    <div class="w-full max-w-sm p-8 space-y-6 bg-white rounded-xl shadow-2xl">
+                        <h2 class="text-3xl font-bold text-center text-secondary">
+                            XipserCloud Login
+                        </h2>
+                        <p class="text-center text-sm text-gray-500">
+                            Panel Kontrol Termux
+                        </p>
+                        <form id="loginForm" class="space-y-4">
+                            <div>
+                                <label for="username" class="block text-sm font-medium text-gray-700">Username</label>
+                                <input id="username" type="text" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-primary focus:border-primary">
+                            </div>
+                            <div>
+                                <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                                <input id="password" type="password" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-primary focus:border-primary">
+                            </div>
+                            <button type="submit" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-lg shadow-md text-sm font-medium text-white bg-primary hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-150 ease-in-out">
+                                <span id="loginBtnText">Masuk ke Dashboard</span>
+                            </button>
+                            <div id="loginMessage" class="text-center text-sm font-medium pt-2" role="alert"></div>
+                        </form>
+                    </div>
+                </div>
+            `;
+            document.getElementById('loginForm').addEventListener('submit', handleLogin);
+        }
+
+        function renderDashboard() {
+            let pageContent = '';
+            
+            if (currentView === 'dashboard') {
+                pageContent = renderStatusDashboard();
+            } else if (currentView === 'deployment') {
+                pageContent = renderDeploymentPanel();
+            } else if (currentView === 'settings') {
+                pageContent = renderSettingsPanel();
+            } else {
+                pageContent = `<div class="p-6 text-gray-500">Pilih menu dari samping.</div>`;
+            }
+
+            app.innerHTML = `
+                <div class="flex min-h-screen">
+                    <!-- Sidebar -->
+                    <div id="sidebar" class="sidebar fixed inset-y-0 left-0 z-40 w-64 bg-secondary text-white transform md:relative md:translate-x-0 md:flex-shrink-0 rounded-r-xl shadow-lg">
+                        <div class="p-6 border-b border-gray-700">
+                            <h1 class="text-2xl font-bold text-primary">XipserCloud</h1>
+                            <p class="text-xs text-gray-400 mt-1">Logged in as: ${auth.username}</p>
+                        </div>
+                        <nav class="mt-6 space-y-2">
+                            ${renderSidebarLink('Dashboard', 'dashboard', 'M9 19V6l2-2l2 2v13')}
+                            ${renderSidebarLink('Deployment', 'deployment', 'M12 2v20')}
+                            ${renderSidebarLink('Backup & Settings', 'settings', 'M10 20v-6h4v6')}
+                            <a href="#" onclick="handleLogout()" class="block py-2 px-6 hover:bg-red-700 transition duration-150 ease-in-out text-sm mx-2 rounded-lg text-gray-300">
+                                Logout
+                            </a>
+                        </nav>
+                    </div>
+
+                    <!-- Main Content -->
+                    <div class="flex-1 flex flex-col overflow-hidden">
+                        <!-- Header Mobile -->
+                        <header class="flex items-center justify-between p-4 bg-white border-b border-gray-200 shadow-sm md:hidden">
+                            <button id="menuBtn" class="text-gray-500 focus:outline-none">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+                            </button>
+                            <h2 class="text-lg font-semibold text-secondary">${currentView.toUpperCase()}</h2>
+                            <div class="w-6 h-6"></div>
+                        </header>
+                        
+                        <main class="flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 bg-gray-50">
+                            ${pageContent}
+                        </main>
+                    </div>
+                </div>
+            `;
+            
+            // Re-attach event listeners after rendering
+            if (currentView === 'dashboard') {
+                updateStatusDisplay(); // Tampilkan data awal jika ada
+                initializeChart();
+            } else if (currentView === 'deployment') {
+                document.getElementById('deployForm').addEventListener('submit', handleDeployment);
+            } else if (currentView === 'settings') {
+                document.getElementById('updateBtn').addEventListener('click', () => handleTermuxCommand('update'));
+                document.getElementById('backupBtn').addEventListener('click', () => handleTermuxCommand('backup'));
+            }
+            
+            document.getElementById('menuBtn')?.addEventListener('click', toggleSidebar);
+            document.querySelectorAll('.sidebar-link').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    setCurrentView(e.currentTarget.getAttribute('data-view'));
+                    if (window.innerWidth < 768) { 
+                        toggleSidebar();
+                    }
+                });
+            });
+        }
+
+        function renderSidebarLink(text, view, iconPath) {
+            const isActive = currentView === view;
+            const activeClasses = isActive ? 'bg-primary text-white font-semibold shadow-inner' : 'text-gray-300 hover:bg-gray-700';
+            return `
+                <a href="#" data-view="${view}" class="sidebar-link flex items-center py-2 px-6 transition duration-150 ease-in-out text-sm rounded-lg mx-2 ${activeClasses}">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${iconPath}"></path></svg>
+                    ${text}
+                </a>
+            `;
+        }
+
+        // --- DASHBOARD SUB-VIEWS ---
+
+        function renderStatusDashboard() {
+            return `
+                <h1 class="text-2xl font-bold mb-4 text-secondary">Dashboard Status Server</h1>
+                <p class="text-gray-600 mb-6">Data ini diambil real-time dari sistem Termux Anda.</p>
+                
+                <!-- Status Cards -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm text-gray-500">Penggunaan CPU</p>
+                        <p id="cpuDisplay" class="text-3xl font-extrabold text-red-500 mt-1">0%</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm text-gray-500">RAM Terpakai</p>
+                        <p id="ramDisplay" class="text-3xl font-extrabold text-primary mt-1">0 GB</p>
+                        <p id="ramTotal" class="text-xs text-gray-400 mt-1">dari 0 GB</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm text-gray-500">Load Average (1m)</p>
+                        <p id="loadDisplay" class="text-3xl font-extrabold text-yellow-600 mt-1">0.0</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm text-gray-500">Uptime Server</p>
+                        <p id="uptimeDisplay" class="text-sm font-bold text-gray-700 mt-3 truncate">Loading...</p>
+                    </div>
+                </div>
+
+                <!-- Usage Chart Placeholder -->
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
+                    <h2 class="text-xl font-semibold mb-3 text-secondary">Grafik Penggunaan Real-time</h2>
+                    <canvas id="usageChart" height="150"></canvas>
+                    <p class="text-xs text-gray-400 mt-3">Grafik ini mencerminkan penggunaan CPU dan RAM aktual.</p>
+                </div>
+            `;
+        }
+
+        function renderDeploymentPanel() {
+            return `
+                <h1 class="text-2xl font-bold mb-6 text-secondary">Deployment Proyek</h1>
+                <div class="bg-white p-6 rounded-xl shadow-xl border border-gray-100">
+                    <p class="text-gray-600 mb-6">Picu perintah unzip file yang sudah Anda upload dan simulasikan konfigurasi Nginx/Database.</p>
+
+                    <form id="deployForm" class="space-y-4">
+                        <div>
+                            <label for="filename" class="block text-sm font-medium text-gray-700">Nama File ZIP Proyek (Harus sudah ada di folder server)</label>
+                            <input id="filename" type="text" required value="project-v1.zip" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-primary focus:border-primary">
+                        </div>
+                        <div>
+                            <label for="targetDir" class="block text-sm font-medium text-gray-700">Direktori Target Unzip (Relatif dari folder server)</label>
+                            <input id="targetDir" type="text" value="projects/latest" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-primary focus:border-primary">
+                        </div>
+                        <div>
+                            <label for="domain" class="block text-sm font-medium text-gray-700">Domain / Subdomain (Hanya untuk keperluan logging)</label>
+                            <select id="domain" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-lg">
+                                <option value="my.id">project.my.id</option>
+                                <option value="com">project.com</option>
+                                <option value="net">project.net</option>
+                            </select>
+                        </div>
+                        <button type="submit" id="deployBtn" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150 ease-in-out">
+                            Mulai Deployment (Unzip & Configure)
+                        </button>
+                    </form>
+                </div>
+
+                <div class="mt-6 bg-gray-800 p-4 rounded-xl shadow-inner">
+                    <h2 class="text-white font-semibold mb-2">Log Deployment</h2>
+                    <pre id="deployLog" class="log-area text-xs text-green-400 overflow-y-auto p-2 bg-gray-900 rounded-lg">Log akan muncul di sini setelah deployment...</pre>
+                </div>
+            `;
+        }
+        
+        function renderSettingsPanel() {
+            return `
+                <h1 class="text-2xl font-bold mb-6 text-secondary">Backup & Pengaturan Termux</h1>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Update Section -->
+                    <div class="bg-white p-6 rounded-xl shadow-xl border border-gray-100 space-y-4">
+                        <h2 class="text-xl font-semibold text-secondary">Update Termux & Packages</h2>
+                        <p class="text-gray-600">Jalankan <code>pkg update && pkg upgrade -y</code>. Ini akan memakan waktu.</p>
+                        <button id="updateBtn" class="w-full py-2 px-4 border border-transparent rounded-lg shadow-md text-sm font-medium text-white bg-yellow-600 hover:bg-yellow-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 transition duration-150 ease-in-out">
+                            Update Sekarang
+                        </button>
+                    </div>
+
+                    <!-- Backup Section -->
+                    <div class="bg-white p-6 rounded-xl shadow-xl border border-gray-100 space-y-4">
+                        <h2 class="text-xl font-semibold text-secondary">Backup Server ($HOME)</h2>
+                        <p class="text-gray-600">Membuat tarball kompresi dari $HOME Termux. File tersimpan di folder ini.</p>
+                        <button id="backupBtn" class="w-full py-2 px-4 border border-transparent rounded-lg shadow-md text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition duration-150 ease-in-out">
+                            Mulai Backup
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mt-6 bg-gray-800 p-4 rounded-xl shadow-inner">
+                    <h2 class="text-white font-semibold mb-2">Log Perintah</h2>
+                    <pre id="systemLog" class="log-area text-xs text-gray-300 overflow-y-auto p-2 bg-gray-900 rounded-lg">Log perintah sistem akan ditampilkan di sini...</pre>
+                </div>
+            `;
+        }
+
+
+        // --- STATE MANAGEMENT AND NAVIGATION ---
+        let statusInterval;
+        
+        function setCurrentView(view) {
+            currentView = view;
+            renderDashboard();
+        }
+
+        function toggleSidebar() {
+            sidebarOpen = !sidebarOpen;
+            const sidebarElement = document.getElementById('sidebar');
+            if (sidebarElement) {
+                if (sidebarOpen) {
+                    sidebarElement.classList.add('open');
+                } else {
+                    sidebarElement.classList.remove('open');
+                }
+            }
+        }
+        
+        function handleLogout() {
+            // Mengganti confirm() dengan showCustomAlert
+            showCustomAlert('Anda telah logout.', 'bg-red-500');
+            auth = { isAuthenticated: false, username: '' };
+            currentView = 'login';
+            clearInterval(statusInterval);
+            renderLogin();
+        }
+        
+        // --- API & DATA HANDLING ---
+
+        async function postData(url, data) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            return response;
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const btnText = document.getElementById('loginBtnText');
+            const messageDiv = document.getElementById('loginMessage');
+            btnText.textContent = 'Memproses...';
+            messageDiv.textContent = '';
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await postData(`${API_BASE_URL}/login`, { username, password });
+                const result = await response.json();
+
+                if (response.ok) {
+                    auth.isAuthenticated = true;
+                    auth.username = username;
+                    currentView = 'dashboard';
+                    renderDashboard();
+                    startStatusUpdater();
+                } else {
+                    messageDiv.className = 'text-center text-sm font-medium pt-2 text-red-500';
+                    messageDiv.textContent = result.message || 'Login gagal, periksa config.json.';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                messageDiv.className = 'text-center text-sm font-medium pt-2 text-red-500';
+                messageDiv.textContent = 'Tidak dapat terhubung ke server Termux. Pastikan server.py berjalan.';
+            } finally {
+                btnText.textContent = 'Masuk ke Dashboard';
+            }
+        }
+
+        function startStatusUpdater() {
+            if (statusInterval) clearInterval(statusInterval);
+            fetchSystemStatus(); 
+            statusInterval = setInterval(fetchSystemStatus, 3000); 
+        }
+
+        async function fetchSystemStatus() {
+            if (!auth.isAuthenticated || currentView !== 'dashboard') return;
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/status`);
+                if (response.ok) {
+                    const status = await response.json();
+                    systemStatus = status;
+                    updateStatusDisplay(status);
+                    updateChart(status);
+                } else {
+                    console.error('Gagal mengambil status server.');
+                }
+            } catch (error) {
+                console.error('Error koneksi:', error);
+                // Matikan interval jika koneksi terputus
+                // clearInterval(statusInterval);
+                // showCustomAlert('Koneksi ke server Termux terputus.', 'bg-red-500');
+            }
+        }
+        
+        function updateStatusDisplay(status = systemStatus) {
+            if (document.getElementById('cpuDisplay')) {
+                document.getElementById('cpuDisplay').textContent = `${status.cpu_usage.toFixed(1)}%`;
+                document.getElementById('ramDisplay').textContent = `${status.ram_used_gb.toFixed(2)} GB`;
+                document.getElementById('ramTotal').textContent = `dari ${status.ram_total_gb.toFixed(2)} GB`;
+                document.getElementById('loadDisplay').textContent = `${status.load_avg_1m.toFixed(2)}`;
+                document.getElementById('uptimeDisplay').textContent = status.uptime;
+            }
+        }
+        
+        async function handleTermuxCommand(commandType) {
+            const isUpdate = commandType === 'update';
+            const btn = document.getElementById(isUpdate ? 'updateBtn' : 'backupBtn');
+            const logArea = document.getElementById('systemLog');
+            
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = 'Memproses... (Lihat Konsol Termux)';
+            
+            logArea.textContent = `[${new Date().toLocaleTimeString()}] Mengirim perintah ${commandType}...\n`;
+
+            try {
+                const response = await postData(`${API_BASE_URL}/api/termux_command`, { type: commandType });
+                const result = await response.json();
+
+                if (response.ok) {
+                    logArea.textContent += `[${new Date().toLocaleTimeString()}] [${result.status}] ${result.message}\n`;
+                    logArea.textContent += `\n--- Log dari Server ---\n${result.log}`;
+                    logArea.scrollTop = logArea.scrollHeight;
+                    showCustomAlert(result.message, result.status === 'SUCCESS' ? 'bg-primary' : 'bg-red-500');
+                } else {
+                    logArea.textContent += `[Gagal] Gagal mengirim perintah ke server.`;
+                    showCustomAlert('Gagal mengirim perintah.', 'bg-red-500');
+                }
+
+            } catch (error) {
+                logArea.textContent += `\n[ERROR KRITIS] Gagal terhubung ke API Termux.`;
+                showCustomAlert('Server API tidak merespons.', 'bg-red-500');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        }
+        
+        async function handleDeployment(e) {
+            e.preventDefault();
+            const logArea = document.getElementById('deployLog');
+            const btn = document.getElementById('deployBtn');
+            
+            btn.disabled = true;
+            btn.textContent = 'Memulai Deployment...';
+
+            const filename = document.getElementById('filename').value;
+            const targetDir = document.getElementById('targetDir').value;
+            const domain = document.getElementById('domain').value;
+            
+            logArea.textContent = `[${new Date().toLocaleTimeString()}] Memulai proses Deployment untuk ${filename}...\n`;
+
+            try {
+                const response = await postData(`${API_BASE_URL}/api/termux_command`, { 
+                    type: 'unzip_deploy', 
+                    filename, 
+                    target_dir: targetDir, 
+                    domain 
+                });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    logArea.textContent += `[${new Date().toLocaleTimeString()}] [${result.status}] ${result.message}\n`;
+                    logArea.textContent += `\n--- Log Eksekusi ---\n${result.log}`;
+                    logArea.scrollTop = logArea.scrollHeight;
+                    showCustomAlert('Deployment Selesai. Cek log Nginx/DB!', 'bg-blue-600');
+                } else {
+                    logArea.textContent += `\n[Gagal] ${result.message}`;
+                }
+            } catch (error) {
+                logArea.textContent += `\n[ERROR KRITIS] Gagal terhubung ke API Termux.`;
+            } finally {
+                 btn.textContent = 'Mulai Deployment (Unzip & Configure)';
+                 btn.disabled = false;
+            }
+        }
+
+        // --- CHARTING ---
+        let chart;
+        function initializeChart() {
+            if (typeof Chart === 'undefined') {
+                const script = document.createElement('script');
+                script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js";
+                script.onload = () => { initializeChart(); };
+                document.head.appendChild(script);
+                return;
+            }
+
+            const ctx = document.getElementById('usageChart').getContext('2d');
+            
+            // Inisialisasi history dengan data awal
+            usageHistory = [{
+                cpu: systemStatus.cpu_usage || 0, 
+                ram: systemStatus.ram_used_gb || 0, 
+                time: systemStatus.timestamp || Date.now() / 1000
+            }];
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: usageHistory.map(h => new Date(h.time * 1000).toLocaleTimeString()),
+                    datasets: [
+                        {
+                            label: 'CPU (%)',
+                            data: usageHistory.map(h => h.cpu),
+                            borderColor: '#ef4444',
+                            tension: 0.1,
+                            fill: true,
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        },
+                        {
+                            label: 'RAM (GB)',
+                            data: usageHistory.map(h => h.ram),
+                            borderColor: '#10b981',
+                            tension: 0.1,
+                            fill: true,
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Penggunaan' }
+                        },
+                        x: {
+                            title: { display: true, text: 'Waktu' }
+                        }
+                    },
+                    plugins: {
+                        legend: { position: 'top' }
+                    }
+                }
+            });
+        }
+        
+        function updateChart(status) {
+            if (!chart) return;
+            
+            usageHistory.push({
+                cpu: status.cpu_usage,
+                ram: status.ram_used_gb,
+                time: status.timestamp
+            });
+            
+            if (usageHistory.length > 30) {
+                usageHistory.shift();
+            }
+
+            chart.data.labels = usageHistory.map(h => new Date(h.time * 1000).toLocaleTimeString());
+            chart.data.datasets[0].data = usageHistory.map(h => h.cpu);
+            chart.data.datasets[1].data = usageHistory.map(h => h.ram);
+            
+            chart.update();
+        }
+        
+        // --- Custom Alert/Modal (Pengganti alert()) ---
+        function showCustomAlert(message, bgColorClass = 'bg-primary') {
+            const container = document.getElementById('customAlertContainer');
+            const alertDiv = document.createElement('div');
+            
+            alertDiv.className = `p-4 mt-2 rounded-lg text-white shadow-xl transition-all duration-300 opacity-0 transform translate-y-full ${bgColorClass}`;
+            alertDiv.textContent = message;
+
+            container.prepend(alertDiv);
+            
+            // Animate in
+            setTimeout(() => {
+                alertDiv.classList.remove('opacity-0', 'translate-y-full');
+                alertDiv.classList.add('opacity-100', 'translate-y-0');
+            }, 50);
+
+            // Animate out and remove
+            setTimeout(() => {
+                alertDiv.classList.remove('opacity-100', 'translate-y-0');
+                alertDiv.classList.add('opacity-0', 'translate-y-full');
+                setTimeout(() => alertDiv.remove(), 300);
+            }, 5000); // Tampil selama 5 detik
+        }
+
+        // --- INITIATION ---
+        window.onload = renderLogin;
+    </script>
+</body>
+</html>
+
